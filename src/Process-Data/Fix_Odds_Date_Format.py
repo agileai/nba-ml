@@ -1,43 +1,51 @@
 import sqlite3
-from datetime import datetime
-
 import pandas as pd
-import toml
+import os
 
-config = toml.load("config.toml")
+# Path to the database
+ODDS_DB_PATH = r"C:\nba\NBA-Machine-Learning-Sports-Betting\Data\OddsData.sqlite"
 
-odds_con = sqlite3.connect("Data/OddsData.sqlite")
+# Connect to the database
+if not os.path.exists(ODDS_DB_PATH):
+    print(f"Database file not found at {ODDS_DB_PATH}")
+    exit(1)
 
-date_format = "%Y-%m-%d"
+odds_con = sqlite3.connect(ODDS_DB_PATH)
 
-for key, value in config['get-data'].items():
-    print(key)
-    odds_df = pd.read_sql_query(f"select * from \"odds_{key}\"", odds_con, index_col="index")
-    team_table_str = key
-    year_count = 0
-    arr = []
+# Fetch data from the table
+try:
+    odds_df = pd.read_sql_query('SELECT * FROM "odds_2024-25"', odds_con, index_col="index")
+    print(f"Fetched {len(odds_df)} rows from odds_2024-25.")
+except Exception as e:
+    print(f"Error fetching data: {e}")
+    odds_con.close()
+    exit(1)
 
-    for row in odds_df.itertuples():
-        date = row[2]
-        date_array = date.split('-')
-        if not date_array or len(date_array) < 2:
-            continue
-        year = date_array[0]
-        month = date_array[2][:2]
-        day = date_array[2][2:]
+# Process the Date column
+if not odds_df.empty:
+    try:
+        # Original logic for Date column processing
+        arr = odds_df['Date'].apply(lambda x: pd.to_datetime(x, errors='coerce').strftime('%Y-%m-%d') if pd.notnull(x) else None)
+        print(f"Length of arr: {len(arr)}")
 
-        if month == '01':
-            year_count += 1
+        # Check length match
+        if len(arr) != len(odds_df):
+            raise ValueError(f"Length of arr ({len(arr)}) does not match length of odds_df ({len(odds_df)})")
 
-        if year_count > 0:
-            year = str(int(year) + 1)
+        # Assign the formatted dates back to the 'Date' column
+        odds_df['Date'] = arr
+        print("Updated Date column successfully.")
+    except Exception as e:
+        print(f"Error updating Date column: {e}")
+else:
+    print("No data in odds_2024-25 table to process.")
 
-        date_str = f'{year}-{month}-{day}'
-        new_date = datetime.strptime(date_str, date_format).date()
+# Save the updated DataFrame back to the table
+try:
+    odds_df.to_sql("odds_2024-25", odds_con, if_exists='replace', index=True)
+    print(f"Updated table 'odds_2024-25' successfully.")
+except Exception as e:
+    print(f"Error saving updated table: {e}")
 
-        arr.append(str(new_date))
-        print(f'Old date = {date} : New date = {new_date}')
-
-    odds_df['Date'] = arr
-    odds_df.drop(odds_df.filter(regex="Unname"), axis=1, inplace=True)
-    odds_df.to_sql(f'odds_{key}_new', odds_con, if_exists="replace")
+# Close the connection
+odds_con.close()

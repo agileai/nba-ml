@@ -3,43 +3,86 @@ import sqlite3
 import pandas as pd
 from tqdm import tqdm
 from datetime import datetime, timedelta
+import os
 
-
+# Define a function to parse and correct the date format
 def get_date(date_string):
-    year1,month,day = re.search(r'(\d+)-\d+-(\d\d)(\d\d)', date_string).groups()
-    year = year1 if int(month) > 8 else int(year1) + 1
-    return datetime.strptime(f"{year}-{month}-{day}", '%Y-%m-%d')
+    try:
+        return datetime.strptime(date_string, '%Y-%m-%d')
+    except ValueError:
+        raise ValueError(f"Invalid date format: {date_string}")
 
-con = sqlite3.connect("../../Data/OddsData.sqlite")
-datasets = ["odds_2022-23", "odds_2021-22", "odds_2020-21", "odds_2019-20", "odds_2018-19", "odds_2017-18", "odds_2016-17", "odds_2015-16", "odds_2014-15", "odds_2013-14", "odds_2012-13", "odds_2011-12", "odds_2010-11", "odds_2009-10", "odds_2008-09", "odds_2007-08"]
+# Database connection setup
+ODDS_DB_PATH = r"C:\nba\NBA-Machine-Learning-Sports-Betting\Data\OddsData.sqlite"
+if not os.path.exists(ODDS_DB_PATH):
+    print(f"Error: Database file not found at {ODDS_DB_PATH}")
+    exit(1)
+
+# Connect to the SQLite database
+try:
+    con = sqlite3.connect(ODDS_DB_PATH)
+    print("Database connected successfully.")
+except sqlite3.OperationalError as e:
+    print(f"Error connecting to database: {e}")
+    exit(1)
+
+# Define the datasets to process
+datasets = ["odds_2024-25"]  # Only process the 2024-25 season
+
+# Process each dataset
 for dataset in tqdm(datasets):
-    data = pd.read_sql_query(f"select * from \"{dataset}\"", con, index_col="index")
-    teams_last_played = {}
-    for index, row in data.iterrows():
-        if 'Home' not in row or 'Away' not in row:
-            continue
-        if row['Home'] not in teams_last_played:
-            teams_last_played[row['Home']] = get_date(row['Date'])
-            home_games_rested = 10 # start of season, big number
-        else:
-            current_date = get_date(row['Date'])
-            home_games_rested = (current_date - teams_last_played[row['Home']]).days if 0 < (current_date - teams_last_played[row['Home']]).days < 9 else 9
-            teams_last_played[row['Home']] = current_date
-        if row['Away'] not in teams_last_played:
-            teams_last_played[row['Away']] = get_date(row['Date'])
-            away_games_rested = 10 # start of season, big number
-        else:
-            current_date = get_date(row['Date'])
-            away_games_rested = (current_date - teams_last_played[row['Away']]).days if 0 < (current_date - teams_last_played[row['Away']]).days < 9 else 9
-            teams_last_played[row['Away']] = current_date
-        
-        # update date
-        data.at[index,'Days_Rest_Home'] = home_games_rested
-        data.at[index,'Days_Rest_Away'] = away_games_rested
+    try:
+        # Read data from the raw dataset
+        raw_data = pd.read_sql_query(f"SELECT * FROM \"{dataset}\"", con, index_col="index")
+        print(f"Processing dataset: {dataset}")
 
-        # print(f"{row['Away']} @ {row['Home']} games rested: {away_games_rested} @ {home_games_rested}")
+        # Create a copy of the raw data for the new dataset
+        fixed_dataset = f"{dataset}_new"
+        data = raw_data.copy()
 
-    # write data to db
-    data.to_sql(dataset, con, if_exists="replace")
+        # Initialize tracking of teams' last played dates
+        teams_last_played = {}
 
+        # Iterate through rows to calculate days rested
+        for index, row in data.iterrows():
+            # Ensure 'Home' and 'Away' columns exist
+            if 'Home' not in row or 'Away' not in row or 'Date' not in row:
+                print(f"Skipping row {index} due to missing data.")
+                continue
+
+            # Calculate days rested for the home team
+            home_team = row['Home']
+            if home_team not in teams_last_played:
+                teams_last_played[home_team] = get_date(row['Date'])
+                home_games_rested = 10
+            else:
+                current_date = get_date(row['Date'])
+                home_games_rested = (current_date - teams_last_played[home_team]).days
+                home_games_rested = max(0, min(home_games_rested, 9))  # Cap at 9 days
+                teams_last_played[home_team] = current_date
+
+            # Calculate days rested for the away team
+            away_team = row['Away']
+            if away_team not in teams_last_played:
+                teams_last_played[away_team] = get_date(row['Date'])
+                away_games_rested = 10
+            else:
+                current_date = get_date(row['Date'])
+                away_games_rested = (current_date - teams_last_played[away_team]).days
+                away_games_rested = max(0, min(away_games_rested, 9))  # Cap at 9 days
+                teams_last_played[away_team] = current_date
+
+            # Update the DataFrame with calculated values
+            data.at[index, 'Days_Rest_Home'] = home_games_rested
+            data.at[index, 'Days_Rest_Away'] = away_games_rested
+
+        # Save the updated dataset back to a new table in the database
+        data.to_sql(fixed_dataset, con, if_exists='replace', index=True)
+        print(f"Dataset '{fixed_dataset}' created successfully.")
+
+    except Exception as e:
+        print(f"Error processing dataset '{dataset}': {e}")
+
+# Close the database connection
 con.close()
+print("Database connection closed.")
